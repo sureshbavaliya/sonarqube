@@ -2,58 +2,76 @@
 
 set -e
 
+SONAR_DIR=/opt/sonarqube
+SONAR_USER=sonar
+SONAR_DB=sonarqube
+SONAR_DB_USER=sonar
+SONAR_DB_PASS=StrongPassword123
+
 echo "Updating system..."
 sudo apt update -y
 
 echo "Installing dependencies..."
-sudo apt install -y openjdk-17-jdk wget unzip curl apache2 postgresql postgresql-contrib ufw
+sudo apt install -y openjdk-17-jdk wget unzip curl apache2 postgresql postgresql-contrib ufw jq
 
-echo "Configuring system limits for SonarQube..."
+echo "Configuring kernel settings for SonarQube..."
 echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 
 echo "Creating SonarQube database..."
 
 sudo -u postgres psql <<EOF
-CREATE USER sonar WITH ENCRYPTED PASSWORD 'StrongPassword123';
-CREATE DATABASE sonarqube OWNER sonar;
-GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonar;
+DO \$\$
+BEGIN
+   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$SONAR_DB_USER') THEN
+      CREATE ROLE $SONAR_DB_USER LOGIN PASSWORD '$SONAR_DB_PASS';
+   END IF;
+END
+\$\$;
+
+CREATE DATABASE $SONAR_DB OWNER $SONAR_DB_USER;
+GRANT ALL PRIVILEGES ON DATABASE $SONAR_DB TO $SONAR_DB_USER;
 EOF
 
 echo "Creating sonar user..."
-sudo useradd -m -d /opt/sonarqube -r -s /bin/bash sonar || true
+sudo useradd -m -d $SONAR_DIR -r -s /bin/bash $SONAR_USER || true
 
-echo "Downloading SonarQube..."
+echo "Fetching latest SonarQube Community version..."
+
+SONAR_URL=$(curl -s https://binaries.sonarsource.com/Distribution/sonarqube/ | grep -oP 'sonarqube-[0-9.]+\.zip' | sort -V | tail -n 1)
+
+echo "Latest package: $SONAR_URL"
 
 cd /opt
-sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.9.4.87374.zip
+sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/$SONAR_URL
 
 echo "Extracting SonarQube..."
+sudo unzip $SONAR_URL
 
-sudo unzip sonarqube-*.zip
-sudo mv sonarqube-* sonarqube
+EXTRACTED=$(echo $SONAR_URL | sed 's/.zip//')
 
-sudo chown -R sonar:sonar /opt/sonarqube
+sudo mv $EXTRACTED $SONAR_DIR
+sudo chown -R $SONAR_USER:$SONAR_USER $SONAR_DIR
 
-echo "Configuring SonarQube database..."
+echo "Configuring database..."
 
-sudo sed -i "s/#sonar.jdbc.username=/sonar.jdbc.username=sonar/" /opt/sonarqube/conf/sonar.properties
-sudo sed -i "s/#sonar.jdbc.password=/sonar.jdbc.password=StrongPassword123/" /opt/sonarqube/conf/sonar.properties
-sudo sed -i "s|#sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube|sonar.jdbc.url=jdbc:postgresql://localhost:5432/sonarqube|" /opt/sonarqube/conf/sonar.properties
+sudo sed -i "s/#sonar.jdbc.username=/sonar.jdbc.username=$SONAR_DB_USER/" $SONAR_DIR/conf/sonar.properties
+sudo sed -i "s/#sonar.jdbc.password=/sonar.jdbc.password=$SONAR_DB_PASS/" $SONAR_DIR/conf/sonar.properties
+sudo sed -i "s|#sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube|sonar.jdbc.url=jdbc:postgresql://localhost:5432/$SONAR_DB|" $SONAR_DIR/conf/sonar.properties
 
-echo "Creating SonarQube systemd service..."
+echo "Creating systemd service..."
 
 sudo tee /etc/systemd/system/sonarqube.service > /dev/null <<EOF
 [Unit]
-Description=SonarQube service
+Description=SonarQube Service
 After=syslog.target network.target
 
 [Service]
 Type=forking
-User=sonar
-Group=sonar
-ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
-ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+User=$SONAR_USER
+Group=$SONAR_USER
+ExecStart=$SONAR_DIR/bin/linux-x86-64/sonar.sh start
+ExecStop=$SONAR_DIR/bin/linux-x86-64/sonar.sh stop
 Restart=always
 LimitNOFILE=65536
 LimitNPROC=4096
@@ -68,7 +86,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable sonarqube
 sudo systemctl start sonarqube
 
-echo "Configuring Apache Reverse Proxy..."
+echo "Configuring Apache reverse proxy..."
 
 sudo a2enmod proxy
 sudo a2enmod proxy_http
@@ -92,21 +110,19 @@ EOF
 sudo a2ensite sonarqube.conf
 sudo systemctl restart apache2
 
-echo "Configuring Firewall..."
+echo "Configuring firewall..."
 
 sudo ufw allow OpenSSH
 sudo ufw allow 80
 sudo ufw --force enable
 
-echo "Installation completed!"
-
 IP=$(hostname -I | awk '{print $1}')
 
-echo "----------------------------------"
-echo "Access SonarQube:"
-echo "http://$IP"
+echo "--------------------------------"
+echo "SonarQube Installation Completed"
+echo "Access URL: http://$IP"
 echo ""
 echo "Default Login:"
 echo "username: admin"
 echo "password: admin"
-echo "----------------------------------"
+echo "--------------------------------"
