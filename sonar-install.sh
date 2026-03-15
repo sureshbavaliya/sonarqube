@@ -8,7 +8,7 @@ SONAR_USER="sonar"
 
 DB_NAME="sonarqube"
 DB_USER="sonar"
-DB_PASS="StrongPassword123"
+DB_PASS="S0narQube@Inf3ren2"
 
 echo "Updating system..."
 sudo apt update -y
